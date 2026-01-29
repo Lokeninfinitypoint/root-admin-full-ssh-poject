@@ -1,0 +1,35 @@
+{
+  "name": "root-admin-agent",
+  "version": "1.0.0",
+  "description": "Root Admin Agent - AI Governance & Enforcement Server for MarketingTool.pro",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node index.js",
+    "test": "node --test",
+    "docker:build": "docker compose build",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down",
+    "docker:logs": "docker logs root-server-admin --tail 100 -f",
+    "docker:restart": "docker compose restart"
+  },
+  "keywords": [
+    "ai-agent",
+    "governance",
+    "enforcement",
+    "admin",
+    "anthropic",
+    "claude"
+  ],
+  "author": "MarketingTool.pro",
+  "license": "PROPRIETARY",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yourusername/root-agent.git"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}

@@ -23,6 +23,52 @@ if (!fs.existsSync(dataDir)) {
   fs.mkdirSync(dataDir, { recursive: true });
 }
 
+// === ENVIRONMENT VALIDATION ===
+function validateEnvironment() {
+  var errors = [];
+
+  // Check ANTHROPIC_API_KEY
+  if (!process.env.ANTHROPIC_API_KEY) {
+    errors.push("ANTHROPIC_API_KEY not found in environment");
+  } else if (!process.env.ANTHROPIC_API_KEY.startsWith("sk-ant-")) {
+    errors.push("ANTHROPIC_API_KEY appears invalid (should start with 'sk-ant-')");
+  }
+
+  // Check required files exist
+  var requiredFiles = [
+    { path: rulesMarkdownPath, name: "rules.md" },
+    { path: rulesJsonPath, name: "rules.json" }
+  ];
+
+  requiredFiles.forEach(function(file) {
+    if (!fs.existsSync(file.path)) {
+      errors.push("Required file missing: " + file.name);
+    }
+  });
+
+  // Check data directory is writable
+  try {
+    var testFile = path.join(dataDir, ".write-test");
+    fs.writeFileSync(testFile, "test");
+    fs.unlinkSync(testFile);
+  } catch (e) {
+    errors.push("Data directory not writable: " + dataDir);
+  }
+
+  if (errors.length > 0) {
+    console.error("=== ENVIRONMENT VALIDATION FAILED ===");
+    errors.forEach(function(err) {
+      console.error("  ❌ " + err);
+    });
+    console.error("=====================================");
+    process.exit(1);
+  }
+
+  console.log("✅ Environment validation passed");
+}
+
+validateEnvironment();
+
 // === STATE ===
 let rulesMarkdown = "";
 let claudeMarkdown = "";
@@ -30,6 +76,53 @@ let rulesJson = {};
 let bannedAgents = {};
 let agentRegistry = {};
 let agentActivity = {};
+
+// === METRICS ===
+let metrics = {
+  requests: {
+    total: 0,
+    byEndpoint: {},
+    byMethod: {}
+  },
+  responseTimes: [],
+  errors: 0,
+  bansIssued: 0,
+  startTime: Date.now()
+};
+
+function trackMetric(endpoint, method, responseTime) {
+  metrics.requests.total++;
+  metrics.requests.byEndpoint[endpoint] = (metrics.requests.byEndpoint[endpoint] || 0) + 1;
+  metrics.requests.byMethod[method] = (metrics.requests.byMethod[method] || 0) + 1;
+
+  if (responseTime !== undefined) {
+    metrics.responseTimes.push(responseTime);
+    // Keep only last 1000 response times to avoid memory bloat
+    if (metrics.responseTimes.length > 1000) {
+      metrics.responseTimes = metrics.responseTimes.slice(-1000);
+    }
+  }
+}
+
+function calculateMetrics() {
+  var avgResponseTime = 0;
+  if (metrics.responseTimes.length > 0) {
+    var sum = metrics.responseTimes.reduce(function(a, b) { return a + b; }, 0);
+    avgResponseTime = sum / metrics.responseTimes.length;
+  }
+
+  var p95 = 0;
+  if (metrics.responseTimes.length > 0) {
+    var sorted = metrics.responseTimes.slice().sort(function(a, b) { return a - b; });
+    var index = Math.floor(sorted.length * 0.95);
+    p95 = sorted[index] || 0;
+  }
+
+  return {
+    avgResponseTime: avgResponseTime.toFixed(2),
+    p95ResponseTime: p95.toFixed(2)
+  };
+}
 
 // === LOAD FUNCTIONS ===
 function loadRulesMarkdown() {
@@ -178,6 +271,7 @@ function banAgent(agentId, reason, source) {
   bannedAgents[agentId] = banData;
   saveBannedAgents();
   log("AUTO-BAN", banData);
+  metrics.bansIssued++;
   return true;
 }
 
@@ -341,12 +435,103 @@ function getPathname(url) {
   return url.split("?")[0];
 }
 
+// === DASHBOARD HTML GENERATOR ===
+function generateDashboardHTML(stats, bannedList) {
+  var uptimeHours = Math.floor(stats.uptime / 3600);
+  var uptimeMinutes = Math.floor((stats.uptime % 3600) / 60);
+
+  // TODO(human): Customize dashboard design here
+  // You can change colors, fonts, layout, add charts, or add real-time updates
+
+  var html = '<!DOCTYPE html><html><head><meta charset="UTF-8">';
+  html += '<title>Root Admin Dashboard</title>';
+  html += '<meta name="viewport" content="width=device-width, initial-scale=1.0">';
+  html += '<style>';
+  html += 'body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 20px; background: #0f172a; color: #e2e8f0; }';
+  html += '.container { max-width: 1200px; margin: 0 auto; }';
+  html += 'h1 { color: #60a5fa; margin-bottom: 10px; }';
+  html += '.subtitle { color: #94a3b8; margin-bottom: 30px; }';
+  html += '.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 40px; }';
+  html += '.stat-card { background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 20px; }';
+  html += '.stat-value { font-size: 36px; font-weight: bold; color: #60a5fa; margin: 10px 0; }';
+  html += '.stat-label { color: #94a3b8; font-size: 14px; text-transform: uppercase; letter-spacing: 0.05em; }';
+  html += '.status-badge { display: inline-block; padding: 4px 12px; border-radius: 12px; font-size: 12px; font-weight: 600; }';
+  html += '.status-active { background: #10b981; color: white; }';
+  html += '.status-danger { background: #ef4444; color: white; }';
+  html += 'table { width: 100%; border-collapse: collapse; background: #1e293b; border-radius: 8px; overflow: hidden; }';
+  html += 'th { background: #334155; padding: 12px; text-align: left; font-weight: 600; color: #f1f5f9; }';
+  html += 'td { padding: 12px; border-top: 1px solid #334155; }';
+  html += 'tr:hover { background: #334155; }';
+  html += '.refresh-btn { background: #3b82f6; color: white; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer; margin-bottom: 20px; }';
+  html += '.refresh-btn:hover { background: #2563eb; }';
+  html += '</style>';
+  html += '</head><body>';
+  html += '<div class="container">';
+  html += '<h1>🛡️ Root Admin Dashboard</h1>';
+  html += '<div class="subtitle">AI Agent Governance & Enforcement System</div>';
+
+  html += '<button class="refresh-btn" onclick="location.reload()">↻ Refresh</button>';
+
+  html += '<div class="stats">';
+  html += '<div class="stat-card"><div class="stat-label">Status</div>';
+  html += '<div class="stat-value"><span class="status-badge status-active">ACTIVE</span></div></div>';
+  html += '<div class="stat-card"><div class="stat-label">Uptime</div>';
+  html += '<div class="stat-value">' + uptimeHours + 'h ' + uptimeMinutes + 'm</div></div>';
+  html += '<div class="stat-card"><div class="stat-label">Total Agents</div>';
+  html += '<div class="stat-value">' + stats.totalAgents + '</div></div>';
+  html += '<div class="stat-card"><div class="stat-label">Registered</div>';
+  html += '<div class="stat-value">' + stats.registeredCount + '</div></div>';
+  html += '<div class="stat-card"><div class="stat-label">Banned</div>';
+  html += '<div class="stat-value"><span class="status-badge status-danger">' + stats.bannedCount + '</span></div></div>';
+  html += '</div>';
+
+  if (bannedList.length > 0) {
+    html += '<h2 style="color: #ef4444; margin-top: 40px;">🚫 Banned Agents</h2>';
+    html += '<table>';
+    html += '<tr><th>Agent ID</th><th>Reason</th><th>Banned At</th></tr>';
+    bannedList.forEach(function(agent) {
+      html += '<tr>';
+      html += '<td><code>' + agent.id + '</code></td>';
+      html += '<td>' + agent.reason + '</td>';
+      html += '<td>' + new Date(agent.bannedAt).toLocaleString() + '</td>';
+      html += '</tr>';
+    });
+    html += '</table>';
+  }
+
+  html += '<div style="margin-top: 40px; padding: 20px; background: #1e293b; border-radius: 8px; border-left: 4px solid #60a5fa;">';
+  html += '<h3 style="margin-top: 0; color: #60a5fa;">📡 API Endpoints</h3>';
+  html += '<ul style="line-height: 1.8; color: #cbd5e1;">';
+  html += '<li><code>GET /health</code> - Server health check</li>';
+  html += '<li><code>GET /status</code> - Full system status</li>';
+  html += '<li><code>GET /rules?agent=ID</code> - Read governance rules</li>';
+  html += '<li><code>GET /banned</code> - List all banned agents</li>';
+  html += '<li><code>POST /register</code> - Register new agent</li>';
+  html += '<li><code>POST /authorize</code> - Authorization gate</li>';
+  html += '</ul></div>';
+
+  html += '</div>';
+  html += '<script>setTimeout(function(){ location.reload(); }, 30000);</script>';
+  html += '</body></html>';
+
+  return html;
+}
+
 // === SERVER ===
 var server = http.createServer(function(req, res) {
+  var startTime = Date.now();
   var method = req.method;
   var url = req.url;
   var pathname = getPathname(url);
   var queryAgent = getAgentFromQuery(url);
+
+  // Track metrics when response finishes
+  var originalEnd = res.end;
+  res.end = function() {
+    var responseTime = Date.now() - startTime;
+    trackMetric(pathname, method, responseTime);
+    originalEnd.apply(res, arguments);
+  };
 
   // --- GET /health ---
   if (method === "GET" && pathname === "/health") {
@@ -361,6 +546,76 @@ var server = http.createServer(function(req, res) {
       enforcement: true,
       uptime: process.uptime()
     });
+  }
+
+  // --- GET /dashboard ---
+  if (method === "GET" && pathname === "/dashboard") {
+    var stats = {
+      totalAgents: Object.keys(agentActivity).length,
+      bannedCount: Object.keys(bannedAgents).length,
+      registeredCount: Object.keys(agentRegistry).length,
+      uptime: Math.floor(process.uptime()),
+      rulesLoaded: rulesMarkdown.length > 0
+    };
+
+    var bannedList = Object.keys(bannedAgents).map(function(id) {
+      return {
+        id: id,
+        reason: bannedAgents[id].reason,
+        bannedAt: bannedAgents[id].bannedAt
+      };
+    });
+
+    // TODO(human): Customize the dashboard HTML design
+    // Add your preferred styling, colors, layout, and visualizations
+    // Consider adding charts, real-time updates, or additional metrics
+    var html = generateDashboardHTML(stats, bannedList);
+
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    return res.end(html);
+  }
+
+  // --- GET /metrics ---
+  if (method === "GET" && pathname === "/metrics") {
+    var calculated = calculateMetrics();
+    var uptime = process.uptime();
+    var requestsPerSecond = (metrics.requests.total / uptime).toFixed(2);
+
+    // Prometheus-compatible format
+    var prometheusMetrics = "";
+    prometheusMetrics += "# HELP root_admin_requests_total Total number of requests\n";
+    prometheusMetrics += "# TYPE root_admin_requests_total counter\n";
+    prometheusMetrics += "root_admin_requests_total " + metrics.requests.total + "\n\n";
+
+    prometheusMetrics += "# HELP root_admin_requests_by_endpoint Requests grouped by endpoint\n";
+    prometheusMetrics += "# TYPE root_admin_requests_by_endpoint counter\n";
+    Object.keys(metrics.requests.byEndpoint).forEach(function(endpoint) {
+      prometheusMetrics += 'root_admin_requests_by_endpoint{endpoint="' + endpoint + '"} ' + metrics.requests.byEndpoint[endpoint] + "\n";
+    });
+    prometheusMetrics += "\n";
+
+    prometheusMetrics += "# HELP root_admin_response_time_avg Average response time in milliseconds\n";
+    prometheusMetrics += "# TYPE root_admin_response_time_avg gauge\n";
+    prometheusMetrics += "root_admin_response_time_avg " + calculated.avgResponseTime + "\n\n";
+
+    prometheusMetrics += "# HELP root_admin_response_time_p95 95th percentile response time\n";
+    prometheusMetrics += "# TYPE root_admin_response_time_p95 gauge\n";
+    prometheusMetrics += "root_admin_response_time_p95 " + calculated.p95ResponseTime + "\n\n";
+
+    prometheusMetrics += "# HELP root_admin_agents_banned_total Total agents banned\n";
+    prometheusMetrics += "# TYPE root_admin_agents_banned_total counter\n";
+    prometheusMetrics += "root_admin_agents_banned_total " + Object.keys(bannedAgents).length + "\n\n";
+
+    prometheusMetrics += "# HELP root_admin_agents_registered_total Total agents registered\n";
+    prometheusMetrics += "# TYPE root_admin_agents_registered_total gauge\n";
+    prometheusMetrics += "root_admin_agents_registered_total " + Object.keys(agentRegistry).length + "\n\n";
+
+    prometheusMetrics += "# HELP root_admin_uptime_seconds Uptime in seconds\n";
+    prometheusMetrics += "# TYPE root_admin_uptime_seconds counter\n";
+    prometheusMetrics += "root_admin_uptime_seconds " + Math.floor(uptime) + "\n";
+
+    res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
+    return res.end(prometheusMetrics);
   }
 
   // --- GET /rules --- Agent MUST read full file
@@ -710,43 +965,6 @@ var server = http.createServer(function(req, res) {
  return;
  }
 
- // --- POST /report-violation ---
- if (method === "POST" && pathname === "/report-violation") {
- parseBody(req).then(function(body) {
- var agentId = body.agentId;
- var violation = body.violation;
- var autoBan = body.autoBan !== false;
-
- if (!agentId || !violation) {
- return jsonResponse(res, 400, { error: "agentId and violation are required" });
- }
-
- // OPTIONAL: you can also enforce ALLOWED_AGENT_ID here if you want
- // to ignore violation reports from unknown agents:
- //
- // if (agentId !== "Ai-tool7890") {
- // return jsonResponse(res, 403, { error: "Reporter agent not allowed" });
- // }
-
- log("VIOLATION-REPORTED", { agentId: agentId, violation: violation });
-
- if (autoBan) {
- var reason = "Violation reported: " + violation;
- banAgent(agentId, reason, "report-violation");
- }
-
- return jsonResponse(res, 200, {
- ok: true,
- agentId: agentId,
- violation: violation,
- autoBan: autoBan
- });
- }).catch(function(e) {
- log("REPORT-VIOLATION-ERROR", { error: e.message });
- return jsonResponse(res, 400, { error: e.message });
- });
- return;
- }
   // --- POST /report-violation ---
   if (method === "POST" && pathname === "/report-violation") {
     parseBody(req).then(function(body) {

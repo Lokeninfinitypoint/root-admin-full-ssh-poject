@@ -3,6 +3,7 @@ const fs = require("fs");
 const path = require("path");
 
 const PORT = 3010;
+const PLUGINS_DIR = path.join(__dirname, "plugins");
 
 // === AGENT MANAGEMENT CONFIG ===
 const HEALTH_CHECK_INTERVAL = 5 * 60 * 1000; // 5 minutes
@@ -124,6 +125,75 @@ function calculateMetrics() {
   };
 }
 
+// === PLUGIN SYSTEM ===
+var plugins = [];
+var pluginEndpoints = {};
+
+function getPluginContext() {
+  return {
+    bannedAgents: bannedAgents,
+    agentRegistry: agentRegistry,
+    agentActivity: agentActivity,
+    metrics: metrics,
+    log: log,
+    banAgent: banAgent,
+    trackActivity: trackActivity
+  };
+}
+
+async function executeHook(hookName, ...args) {
+  for (var plugin of plugins) {
+    if (plugin.hooks && plugin.hooks[hookName]) {
+      try {
+        await plugin.hooks[hookName](...args, getPluginContext());
+      } catch (error) {
+        console.error("[" + new Date().toISOString() + "] Plugin '" + plugin.name + "' hook '" + hookName + "' error:", error.message);
+      }
+    }
+  }
+}
+
+function loadPlugins() {
+  if (!fs.existsSync(PLUGINS_DIR)) {
+    console.log("[" + new Date().toISOString() + "] No plugins directory found");
+    return;
+  }
+
+  var pluginFiles = fs.readdirSync(PLUGINS_DIR).filter(function(file) {
+    return file.endsWith(".js");
+  });
+
+  console.log("[" + new Date().toISOString() + "] Loading " + pluginFiles.length + " plugins...");
+
+  pluginFiles.forEach(function(file) {
+    try {
+      var pluginPath = path.join(PLUGINS_DIR, file);
+      delete require.cache[require.resolve(pluginPath)]; // Allow hot-reload
+      var plugin = require(pluginPath);
+
+      if (!plugin.name) {
+        console.error("[" + new Date().toISOString() + "] Plugin " + file + " missing name property");
+        return;
+      }
+
+      plugins.push(plugin);
+      console.log("[" + new Date().toISOString() + "] ✅ Loaded plugin: " + plugin.name + " v" + (plugin.version || "1.0.0"));
+
+      // Register custom endpoints
+      if (plugin.endpoints) {
+        Object.keys(plugin.endpoints).forEach(function(route) {
+          pluginEndpoints[route] = plugin.endpoints[route];
+          console.log("[" + new Date().toISOString() + "]   → Endpoint: " + plugin.endpoints[route].method + " " + route);
+        });
+      }
+    } catch (error) {
+      console.error("[" + new Date().toISOString() + "] Failed to load plugin " + file + ":", error.message);
+    }
+  });
+
+  console.log("[" + new Date().toISOString() + "] Plugin system ready (" + plugins.length + " active)");
+}
+
 // === LOAD FUNCTIONS ===
 function loadRulesMarkdown() {
   try {
@@ -204,6 +274,7 @@ loadClaudeMarkdown();
 loadRulesJson();
 loadBannedAgents();
 loadAgentRegistry();
+loadPlugins();
 
 // === HOT-RELOAD ===
 function watchFile(filePath, label, reloadFn) {
@@ -272,6 +343,7 @@ function banAgent(agentId, reason, source) {
   saveBannedAgents();
   log("AUTO-BAN", banData);
   metrics.bansIssued++;
+  executeHook("onAgentBan", agentId, reason, source).catch(function(e) {});
   return true;
 }
 
@@ -767,6 +839,7 @@ var server = http.createServer(function(req, res) {
       saveAgentRegistry();
       trackActivity(agentId, "register");
       log("REGISTER", { agentId: agentId, purpose: purpose });
+      executeHook("onAgentRegister", agentId, purpose).catch(function(e) {});
 
       return jsonResponse(res, 200, {
         registered: true,
@@ -1074,6 +1147,19 @@ var server = http.createServer(function(req, res) {
         return { agentId: id, reason: bannedAgents[id].reason };
       })
     });
+  }
+
+  // --- Plugin Endpoints ---
+  if (pluginEndpoints[pathname]) {
+    var endpoint = pluginEndpoints[pathname];
+    if (endpoint.method === method || !endpoint.method) {
+      Promise.resolve(endpoint.handler(req, res, getPluginContext()))
+        .catch(function(error) {
+          console.error("[" + new Date().toISOString() + "] Plugin endpoint error:", error.message);
+          jsonResponse(res, 500, { error: "Plugin error: " + error.message });
+        });
+      return;
+    }
   }
 
   // --- Default ---

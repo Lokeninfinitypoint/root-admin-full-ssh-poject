@@ -1,0 +1,38 @@
+# === SECURITY: Sensitive Files ===
+.env
+.env.*
+*.key
+*.pem
+*.secret
+
+# === Data & Runtime ===
+data/
+audit.log
+*.log
+.build.log
+
+# === Agent State (regenerated at runtime) ===
+banned-agents.json
+
+# === Backups ===
+*.bak
+*.save
+*.backup
+
+# === Node.js ===
+node_modules/
+package-lock.json
+
+# === Claude Code (local settings only) ===
+.claude/
+
+# === IDE / Editor ===
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# === OS Files ===
+.DS_Store
+Thumbs.db

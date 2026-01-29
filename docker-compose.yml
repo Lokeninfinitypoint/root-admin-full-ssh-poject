@@ -1,0 +1,15 @@
+version: "3.8"
+
+services:
+  root-server-admin:
+    image: node:22-alpine
+    working_dir: /app
+    container_name: root-server-admin
+    command: ["node", "index.js"]
+    restart: unless-stopped
+    ports:
+      - "3010:3010"
+    volumes:
+      - .:/app
+    env_file:
+      - .env

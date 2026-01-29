@@ -1,0 +1,30 @@
+{
+  "project": "AI MarketingTool",
+  "platforms": {
+    "google": 56,
+    "facebook": 61,
+    "website_shopify": 77
+  },
+  "plans": {
+    "starter": { "access": "1_category", "tools_estimate": 20 },
+    "professional": { "access": "1_platform" },
+    "lifetime": { "access": "all_platforms", "tools": 206 }
+  },
+  "trial": {
+    "days": 7,
+    "access": "all_tools",
+    "post_trial_limit_tools": 3
+  },
+  "governance": {
+    "no_fake_tools": true,
+    "same_logic_web_and_mobile": true,
+    "test_first": true,
+    "no_hidden_agents": true,
+    "transparency": {
+      "honest_ux": true,
+      "no_fabricated_results": true,
+      "mark_simulations_clearly": true
+    },
+    "final_governance_rule": "If any tool conflicts with Root Admin Rules, the rules win and the agent must refuse to act."
+  }
+}

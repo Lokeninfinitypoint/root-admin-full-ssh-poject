@@ -351,8 +351,8 @@ Django website for marketing
   211 n8n:                http://31.220.107.19:32776                                                                     
 
 
-
-✅ Marketing site 
+docker ✅ Reverse Proxy (Nginx)
+✅ Marketing site  https://marketingtool.pro  
 ✅Appwriteng  (app frontend (Next.js)
 ✅ Backend API (FastAPI/NestJS)
 ✅ Appwrite

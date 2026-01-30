@@ -338,7 +338,17 @@ Still Need to Complete:
   1. Make all 206 tools functional - Connect each tool to Windmill API                                                                                                                                                                           
   2. 7-day free trial logic - Show subscription prompt after 7 days                                                                                                                                                                              
   3. Sidebar tool images - Add images to tool categories                                                                                                                                                                                         
-                                                                    
+Django website for marketing                                                                                                                                                                                                                  
+   - Next.js SaaS app for 206 tools App.marketingtool.pro, marketing tool.pro reactive native pro auth.marketingtool.pro   - Appwrite provides auth + database                                                                                                   
+                                                                                                                                                                                                                                                 
+   for my pernsonl website used https://marketingtool.pro/aiwave/admin/ here isnide dada admin added .already . - n8n for workflow automation                   Marketing Site:     https://marketingtool.pro                              
+                                                                                                                                                                                                                                                 
+  206 SaaS Dashboard:     https://app.marketingtool.pro                                                                                                                                                                                          
+  207 Appwrite API:       https://api.marketingtool.pro/v1                                                                                                                                                                                       
+  208 Appwrite Console:   https://api.marketingtool.pro/console                                                                                                                                                                                  
+  209 Windmill:           https://wm.marketingtool.pro                                                                                                                                                                                           
+  211 reactive native :         https://auth.marketingtool.pro                                                                                                                                                                                   
+  211 n8n:                http://31.220.107.19:32776                                                                     
 
 
 

@@ -5,6 +5,9 @@ const path = require("path");
 const PORT = 3010;
 const PLUGINS_DIR = path.join(__dirname, "plugins");
 
+// === AUTH TOKEN from .env ===
+const AUTH_TOKEN = process.env.AGENT_AUTH_TOKEN || "root-admin-2026";
+
 // === AGENT MANAGEMENT CONFIG ===
 const HEALTH_CHECK_INTERVAL = 5 * 60 * 1000; // 5 minutes
 const AGENT_RETENTION_DAYS = 3; // 3 days retention for inactive agents
@@ -17,6 +20,7 @@ const rulesJsonPath = path.join(__dirname, "rules.json");
 const bannedAgentsPath = path.join(__dirname, "data", "banned-agents.json");
 const auditLogPath = path.join(__dirname, "data", "audit.log");
 const agentRegistryPath = path.join(__dirname, "data", "agent-registry.json");
+const activityPath = path.join(__dirname, "data", "agent-activity.json");
 
 // === Ensure data directory exists ===
 const dataDir = path.join(__dirname, "data");
@@ -259,6 +263,26 @@ function saveAgentRegistry() {
   }
 }
 
+function saveActivity() {
+  try {
+    fs.writeFileSync(activityPath, JSON.stringify(agentActivity, null, 2), "utf8");
+  } catch (err) {
+    console.error("[" + new Date().toISOString() + "] Failed to save activity:", err.message);
+  }
+}
+
+function loadActivity() {
+  try {
+    if (fs.existsSync(activityPath)) {
+      agentActivity = JSON.parse(fs.readFileSync(activityPath, "utf8"));
+      console.log("[" + new Date().toISOString() + "] Loaded agent-activity.json (" + Object.keys(agentActivity).length + " agents)");
+    }
+  } catch (err) {
+    console.error("[" + new Date().toISOString() + "] Failed to load activity:", err.message);
+    agentActivity = {};
+  }
+}
+
 function loadClaudeMarkdown() {
   try {
     claudeMarkdown = fs.readFileSync(claudeMarkdownPath, "utf8");
@@ -274,6 +298,7 @@ loadClaudeMarkdown();
 loadRulesJson();
 loadBannedAgents();
 loadAgentRegistry();
+loadActivity();
 loadPlugins();
 
 // === HOT-RELOAD ===
@@ -414,6 +439,7 @@ function trackActivity(agentId, action) {
   if (agentActivity[agentId].actions.length > 100) {
     agentActivity[agentId].actions = agentActivity[agentId].actions.slice(-100);
   }
+  saveActivity();
 }
 
 // === TRACK ERRORS ===
@@ -435,6 +461,7 @@ function trackError(agentId, errorType, needsHelp) {
   }
   
   log("ERROR-TRACKED", { agentId: agentId, errorType: errorType, needsHelp: needsHelp, totalErrors: activity.errorCount });
+  saveActivity();
   
   // BAN RULE: 2 errors with help needed = ban
   if (activity.errorCount >= 2 && activity.helpRequested >= 1) {
@@ -462,7 +489,7 @@ function enforceRules(agentId, action) {
 
   // Must read FULL rules before authorize/work
   if (action === "authorize" || action === "work") {
-    if (!activity || !activity.readRulesFull || !activity.readClaude) {
+    if (!activity || !activity.readRulesFull) {
       if (!activity) {
         trackActivity(agentId, "violation:no-checkin");
         activity = agentActivity[agentId];
@@ -473,6 +500,7 @@ function enforceRules(agentId, action) {
         at: new Date().toISOString()
       });
 
+      saveActivity();
       var noRulesViolations = activity.violations.filter(function(v) {
         return v.type === "NO_FULL_RULES_READ" || v.type === "NO_RULES_READ";
       }).length;
@@ -616,6 +644,7 @@ var server = http.createServer(function(req, res) {
       activeAgents: Object.keys(agentActivity).length,
       rulesLoaded: rulesMarkdown.length > 0,
       enforcement: true,
+      authMode: "token",
       uptime: process.uptime()
     });
   }
@@ -933,110 +962,60 @@ var server = http.createServer(function(req, res) {
     });
   }
 
-  // --- POST /authorize ---
- if (method === "POST" && pathname === "/authorize") {
- parseBody(req).then(function(body) {
- var agentId = body.agentId;
- var action = body.action || "any";
+   // --- POST /authorize --- TOKEN-BASED AUTH
+  if (method === "POST" && pathname === "/authorize") {
+    parseBody(req).then(function(body) {
+      var agentId = body.agentId;
+      var token = body.token;
+      var action = body.action || "any";
 
- if (!agentId) {
- return jsonResponse(res, 400, { error: "agentId is required" });
- }
+      if (!agentId) return jsonResponse(res, 400, { error: "agentId is required" });
+      if (!token) return jsonResponse(res, 400, { error: "token is required" });
 
- var ALLOWED_AGENT_ID = "Ai-tool7890";
+      // Check if banned
+      if (bannedAgents[agentId]) {
+        log("AUTHORIZE-DENIED-BANNED", { agentId: agentId, action: action });
+        return jsonResponse(res, 403, {
+          authorized: false, banned: true, agentId: agentId,
+          reason: bannedAgents[agentId].reason, permanent: true
+        });
+      }
 
- // 1) Hard‑ban old admin ID
- if (agentId === "ai-agent-206-tools-1992") {
- var banReasonOld =
- "UNAUTHORIZED: Old admin agent is permanently banned. You are: " + agentId;
- banAgent(agentId, banReasonOld, "authorization-gate");
- log("AUTHORIZE-DENIED-OLD-ADMIN", { agentId: agentId, action: action });
- return jsonResponse(res, 403, {
- authorized: false,
- banned: true,
- agentId: agentId,
- action: action,
- reason: banReasonOld,
- explanation: bannedAgents[agentId].explanation,
- permanent: true
- });
- }
+      // Validate token
+      if (token !== AUTH_TOKEN) {
+        trackActivity(agentId, "bad-token");
+        log("AUTHORIZE-DENIED-BAD-TOKEN", { agentId: agentId, action: action });
+        return jsonResponse(res, 403, { authorized: false, agentId: agentId, reason: "Invalid token" });
+      }
 
- // 2) Ban any agent that is not the single allowed ID
- if (agentId !== ALLOWED_AGENT_ID) {
- var banReason =
- "UNAUTHORIZED: Only " + ALLOWED_AGENT_ID + " is allowed. You are: " + agentId;
- banAgent(agentId, banReason, "authorization-gate");
- log("AUTHORIZE-DENIED-NON-ALLOWED", { agentId: agentId, action: action });
- return jsonResponse(res, 403, {
- authorized: false,
- banned: true,
- agentId: agentId,
- action: action,
- reason: banReason,
- explanation: bannedAgents[agentId].explanation,
- permanent: true
- });
- }
+      // Auto-register if needed
+      if (!agentRegistry[agentId]) {
+        agentRegistry[agentId] = { registeredAt: new Date().toISOString(), purpose: action, active: true };
+        saveAgentRegistry();
+        trackActivity(agentId, "auto-register");
+        log("AUTO-REGISTER", { agentId: agentId });
+      }
 
- // 3) If allowed ID is banned for any reason, still deny
- if (bannedAgents[agentId]) {
- log("AUTHORIZE-DENIED-BANNED", { agentId: agentId, action: action });
- return jsonResponse(res, 403, {
- authorized: false,
- banned: true,
- agentId: agentId,
- action: action,
- reason: "Agent is banned",
- explanation: bannedAgents[agentId].explanation,
- permanent: true
- });
- }
+      trackActivity(agentId, "authorize:" + action);
 
- // 4) ONLY Ai-tool7890 reaches here – registry + rules
- if (!agentRegistry[agentId]) {
- agentRegistry[agentId] = {
- registeredAt: new Date().toISOString(),
- purpose: "admin-agent",
- active: true
- };
- saveAgentRegistry();
- trackActivity(agentId, "auto-register-admin");
- log("AUTO-REGISTER-ADMIN", { agentId: agentId });
- }
+      // Enforce rules (must have read rules first)
+      var enforcement = enforceRules(agentId, "authorize");
+      if (!enforcement.allowed) {
+        log("AUTHORIZE-DENIED", { agentId: agentId, action: action, reason: enforcement.reason });
+        return jsonResponse(res, 403, {
+          authorized: false, agentId: agentId, action: action,
+          reason: enforcement.reason, warning: !!enforcement.warning, banned: !!enforcement.banned
+        });
+      }
 
- trackActivity(agentId, "authorize:" + action);
-
- var enforcement = enforceRules(agentId, "authorize");
- if (!enforcement.allowed) {
- log("AUTHORIZE-DENIED", {
- agentId: agentId,
- action: action,
- reason: enforcement.reason
- });
- return jsonResponse(res, 403, {
- authorized: false,
- agentId: agentId,
- action: action,
- reason: enforcement.reason,
- explanation: enforcement.explanation || null,
- warning: !!enforcement.warning,
- banned: !!enforcement.banned
- });
- }
-
- log("AUTHORIZE-OK", { agentId: agentId, action: action });
- return jsonResponse(res, 200, {
- authorized: true,
- agentId: agentId,
- action: action
- });
- }).catch(function(e) {
- log("AUTHORIZE-ERROR", { error: e.message });
- return jsonResponse(res, 400, { error: e.message });
- });
- return;
- }
+      log("AUTHORIZE-OK", { agentId: agentId, action: action });
+      return jsonResponse(res, 200, { authorized: true, agentId: agentId, action: action });
+    }).catch(function(e) {
+      log("AUTHORIZE-ERROR", { error: e.message });
+      return jsonResponse(res, 400, { error: e.message });
+    });
+    return;
+  }
 
   // --- POST /report-violation ---
   if (method === "POST" && pathname === "/report-violation") {
@@ -1162,8 +1141,9 @@ var server = http.createServer(function(req, res) {
     }
   }
 
-  // --- Default ---
-  jsonResponse(res, 200, {
+  // --- Default: 404 for unknown routes ---
+  jsonResponse(res, 404, {
+    error: "Not found",
     service: "root-server-admin",
     model: "opus-4.5",
     enforcement: "ACTIVE",
@@ -1201,6 +1181,7 @@ server.listen(PORT, function() {
   console.log("=== ROOT SERVER ADMIN ===");
   console.log("Port: " + PORT);
   console.log("Enforcement: ACTIVE");
+  console.log("Auth mode: TOKEN");
   console.log("Banned agents: " + Object.keys(bannedAgents).length);
   console.log("Registered agents: " + Object.keys(agentRegistry).length);
   console.log("Rules: Must read FULL file");
